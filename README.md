@@ -109,11 +109,22 @@ function mixColors(fromHex, toHex, ratio) {
     return `rgb(${red}, ${green}, ${blue})`;
 }
 
+function parseColorComponents(colorString) {
+    const prefix = colorString.indexOf('rgba(') === 0 ? 'rgba(' : 'rgb(';
+    return colorString.replace(prefix, '').replace(')', '').split(',').map(item => item.trim());
+}
+
 function withAlpha(colorString, alpha) {
     const boundedAlpha = clamp(alpha, 0, 1);
-    if (colorString.indexOf('rgb(') === 0) {
-        const numbers = colorString.replace('rgb(', '').replace(')', '').split(',').map(item => parseInt(item.trim(), 10));
-        return `rgba(${numbers[0]}, ${numbers[1]}, ${numbers[2]}, ${boundedAlpha})`;
+    if (colorString.indexOf('rgba(') === 0 || colorString.indexOf('rgb(') === 0) {
+        const parts = parseColorComponents(colorString);
+        if (parts.length < 3) {
+            return colorString;
+        }
+        const red = parseInt(parts[0], 10);
+        const green = parseInt(parts[1], 10);
+        const blue = parseInt(parts[2], 10);
+        return `rgba(${red}, ${green}, ${blue}, ${boundedAlpha})`;
     }
     if (colorString.indexOf('#') === 0) {
         const rgb = hexToRgb(colorString);
@@ -125,6 +136,9 @@ function withAlpha(colorString, alpha) {
 function normalizeBounded(series, oldMin, oldMax) {
     const out = newSeries(null);
     const denominator = oldMax - oldMin;
+    if (denominator === 0) {
+        return out;
+    }
     for (let index = 0; index < candleCount; index++) {
         const value = series[index];
         out[index] = isValidNumber(value) ? (((value - oldMin) / denominator) * 2) - 1 : null;
@@ -642,7 +656,8 @@ for (let barIndex = Math.max(maxBarsBackIndex, 0); barIndex < candleCount; barIn
     }
 }
 
-const winRate = totalTrades > 0 ? totalWins / totalTrades : 0;
+const completedTrades = totalWins + totalLosses;
+const winRate = completedTrades > 0 ? totalWins / completedTrades : 0;
 const winLossRatio = totalLosses > 0 ? totalWins / totalLosses : totalWins;
 const tradeStatsRows = [];
 if (showTradeStats) {
@@ -654,7 +669,7 @@ if (showTradeStats) {
             fontWeight: 'bold'
         }]
     });
-    tradeStatsRows.push({ cells: [textCell('Win Rate'), textCell(totalTrades > 0 ? `${(winRate * 100).toFixed(1)}%` : 'n/a')] });
+    tradeStatsRows.push({ cells: [textCell('Win Rate'), textCell(completedTrades > 0 ? `${(winRate * 100).toFixed(1)}%` : 'n/a')] });
     tradeStatsRows.push({ cells: [textCell('Trades'), textCell(`${totalTrades} (${totalWins}|${totalLosses})`)] });
     tradeStatsRows.push({ cells: [textCell('WL Ratio'), textCell(totalLosses > 0 ? winLossRatio.toFixed(2) : (totalWins > 0 ? String(totalWins) : 'n/a'))] });
     tradeStatsRows.push({ cells: [textCell('Early Signal Flips'), textCell(String(totalEarlySignalFlips))] });

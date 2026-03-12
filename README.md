@@ -1,970 +1,755 @@
-'use strict';
+describe_indicator('Machine Learning: Lorentzian Classification TS Port', 'price', {
+    shortName: 'Lorentzian TS',
+    decimals: 'by_symbol'
+});
 
-function nz(value, fallback = 0) {
-  return Number.isFinite(value) ? value : fallback;
+const sourceName = input.select('Source', 'close', constants.price_source_options);
+const sourceSeries = market[sourceName];
+const neighborsCount = input.number('Neighbors Count', 8, { min: 1, max: 100 });
+const maxBarsBack = input.number('Max Bars Back', 2000, { min: 100, max: 10000 });
+const featureCount = input.number('Feature Count', 5, { min: 2, max: 5 });
+const colorCompression = input.number('Color Compression', 1, { min: 1, max: 10 });
+const showExits = input.boolean('Show Default Exits', false);
+const useDynamicExits = input.boolean('Use Dynamic Exits', false);
+const showTradeStats = input.boolean('Show Trade Stats', true);
+const useWorstCase = input.boolean('Use Worst Case Estimates', false);
+
+const useVolatilityFilter = input.boolean('Use Volatility Filter', true);
+const useRegimeFilter = input.boolean('Use Regime Filter', true);
+const useAdxFilter = input.boolean('Use ADX Filter', false);
+const regimeThreshold = input.number('Regime Threshold', -0.1, { min: -10, max: 10 });
+const adxThreshold = input.number('ADX Threshold', 20, { min: 0, max: 100 });
+
+const feature1Type = input.select('Feature 1 Type', 'RSI', ['RSI', 'WT', 'CCI', 'ADX']);
+const feature1ParamA = input.number('Feature 1 Param A', 14, { min: 1, max: 200 });
+const feature1ParamB = input.number('Feature 1 Param B', 1, { min: 1, max: 200 });
+const feature2Type = input.select('Feature 2 Type', 'WT', ['RSI', 'WT', 'CCI', 'ADX']);
+const feature2ParamA = input.number('Feature 2 Param A', 10, { min: 1, max: 200 });
+const feature2ParamB = input.number('Feature 2 Param B', 11, { min: 1, max: 200 });
+const feature3Type = input.select('Feature 3 Type', 'CCI', ['RSI', 'WT', 'CCI', 'ADX']);
+const feature3ParamA = input.number('Feature 3 Param A', 20, { min: 1, max: 200 });
+const feature3ParamB = input.number('Feature 3 Param B', 1, { min: 1, max: 200 });
+const feature4Type = input.select('Feature 4 Type', 'ADX', ['RSI', 'WT', 'CCI', 'ADX']);
+const feature4ParamA = input.number('Feature 4 Param A', 20, { min: 1, max: 200 });
+const feature4ParamB = input.number('Feature 4 Param B', 2, { min: 1, max: 200 });
+const feature5Type = input.select('Feature 5 Type', 'RSI', ['RSI', 'WT', 'CCI', 'ADX']);
+const feature5ParamA = input.number('Feature 5 Param A', 9, { min: 1, max: 200 });
+const feature5ParamB = input.number('Feature 5 Param B', 1, { min: 1, max: 200 });
+
+const useEmaFilter = input.boolean('Use EMA Filter', false);
+const emaPeriod = input.number('EMA Filter Period', 200, { min: 1, max: 2000 });
+const useSmaFilter = input.boolean('Use SMA Filter', false);
+const smaPeriod = input.number('SMA Filter Period', 200, { min: 1, max: 2000 });
+
+const useKernelFilter = input.boolean('Trade with Kernel', true);
+const showKernelEstimate = input.boolean('Show Kernel Estimate', true);
+const useKernelSmoothing = input.boolean('Enhance Kernel Smoothing', false);
+const kernelLookback = input.number('Kernel Lookback Window', 8, { min: 3, max: 100 });
+const kernelRelativeWeight = input.number('Kernel Relative Weighting', 8, { min: 0.25, max: 100 });
+const kernelStartAtBar = input.number('Kernel Regression Level', 25, { min: 1, max: 200 });
+const kernelLag = input.number('Kernel Lag', 2, { min: 1, max: 10 });
+
+const showBarColors = input.boolean('Show Bar Colors', true);
+const showBarPredictions = input.boolean('Show Bar Prediction Values', true);
+const useAtrOffset = input.boolean('Use ATR Offset', false);
+const barPredictionsOffset = input.number('Bar Prediction Offset', 0, { min: 0, max: 25, hide_in_legend: true });
+
+const candleCount = close.length;
+const maxBarsBackIndex = candleCount - 1 >= maxBarsBack ? candleCount - 1 - maxBarsBack : 0;
+const transparentColor = 'rgba(0, 0, 0, 0)';
+const bullishKernelColor = 'rgba(0, 153, 136, 0.80)';
+const bearishKernelColor = 'rgba(204, 51, 17, 0.80)';
+const bullishMarkerColor = 'rgba(0, 153, 136, 0.90)';
+const bearishMarkerColor = 'rgba(204, 51, 17, 0.90)';
+const exitLongColor = 'rgba(58, 255, 23, 0.90)';
+const exitShortColor = 'rgba(253, 23, 7, 0.90)';
+const neutralColor = '#787b86';
+const bearishGradientBase = '#CC3311';
+const bullishGradientBase = '#009988';
+
+function newSeries(defaultValue) {
+    const out = new Array(candleCount);
+    for (let index = 0; index < candleCount; index++) {
+        out[index] = defaultValue;
+    }
+    return out;
+}
+
+function isValidNumber(value) {
+    return value !== null && value !== undefined && Number.isFinite(value);
 }
 
 function clamp(value, minValue, maxValue) {
-  return Math.max(minValue, Math.min(maxValue, value));
+    return Math.min(Math.max(value, minValue), maxValue);
 }
 
-function rescale(value, oldMin, oldMax, newMin, newMax) {
-  if (!Number.isFinite(value) || oldMax === oldMin) return NaN;
-  const t = (value - oldMin) / (oldMax - oldMin);
-  return newMin + t * (newMax - newMin);
-}
-
-function sumFinite(values) {
-  let acc = 0;
-  for (const v of values) {
-    if (Number.isFinite(v)) acc += v;
-  }
-  return acc;
-}
-
-function seriesFromBars(bars, key) {
-  return bars.map((bar) => Number(bar[key]));
-}
-
-function makeArray(length, fill = NaN) {
-  return Array.from({ length }, () => fill);
-}
-
-function calcSma(src, length) {
-  const out = makeArray(src.length, NaN);
-  if (length <= 0) return out;
-
-  let runningSum = 0;
-
-  for (let i = 0; i < src.length; i += 1) {
-    const currentValue = src[i];
-    if (Number.isFinite(currentValue)) runningSum += currentValue;
-
-    if (i >= length) {
-      const removedValue = src[i - length];
-      if (Number.isFinite(removedValue)) runningSum -= removedValue;
+function sumNumbers(values) {
+    let total = 0;
+    for (let index = 0; index < values.length; index++) {
+        total += values[index];
     }
-
-    if (i >= length - 1) out[i] = runningSum / length;
-  }
-
-  return out;
+    return total;
 }
 
-function calcEma(src, length) {
-  const out = makeArray(src.length, NaN);
-  if (length <= 0 || src.length === 0) return out;
+function hexToRgb(hexColor) {
+    const normalized = hexColor.replace('#', '');
+    const red = parseInt(normalized.slice(0, 2), 16);
+    const green = parseInt(normalized.slice(2, 4), 16);
+    const blue = parseInt(normalized.slice(4, 6), 16);
+    return { red, green, blue };
+}
 
-  const alpha = 2 / (length + 1);
-  let prev = NaN;
+function mixColors(fromHex, toHex, ratio) {
+    const boundedRatio = clamp(ratio, 0, 1);
+    const from = hexToRgb(fromHex);
+    const to = hexToRgb(toHex);
+    const red = Math.round(from.red + (to.red - from.red) * boundedRatio);
+    const green = Math.round(from.green + (to.green - from.green) * boundedRatio);
+    const blue = Math.round(from.blue + (to.blue - from.blue) * boundedRatio);
+    return `rgb(${red}, ${green}, ${blue})`;
+}
 
-  for (let i = 0; i < src.length; i += 1) {
-    const currentValue = src[i];
-    if (!Number.isFinite(currentValue)) {
-      out[i] = prev;
-      continue;
+function withAlpha(colorString, alpha) {
+    const boundedAlpha = clamp(alpha, 0, 1);
+    if (colorString.indexOf('rgb(') === 0) {
+        const numbers = colorString.replace('rgb(', '').replace(')', '').split(',').map(item => parseInt(item.trim(), 10));
+        return `rgba(${numbers[0]}, ${numbers[1]}, ${numbers[2]}, ${boundedAlpha})`;
     }
-    prev = Number.isFinite(prev) ? alpha * currentValue + (1 - alpha) * prev : currentValue;
-    out[i] = prev;
-  }
-
-  return out;
-}
-
-function rma(src, length) {
-  const out = makeArray(src.length, NaN);
-  if (length <= 0 || src.length === 0) return out;
-
-  let prev = NaN;
-  let seedTotal = 0;
-
-  for (let i = 0; i < src.length; i += 1) {
-    const currentValue = src[i];
-    if (!Number.isFinite(currentValue)) continue;
-
-    if (i < length) {
-      seedTotal += currentValue;
-      if (i === length - 1) {
-        prev = seedTotal / length;
-        out[i] = prev;
-      }
-    } else {
-      prev = (prev * (length - 1) + currentValue) / length;
-      out[i] = prev;
+    if (colorString.indexOf('#') === 0) {
+        const rgb = hexToRgb(colorString);
+        return `rgba(${rgb.red}, ${rgb.green}, ${rgb.blue}, ${boundedAlpha})`;
     }
-  }
-
-  return out;
+    return colorString;
 }
 
-function rollingMax(src, length) {
-  const out = makeArray(src.length, NaN);
-  for (let i = 0; i < src.length; i += 1) {
-    if (i < length - 1) continue;
-    let highestValue = -Infinity;
-    for (let j = i - length + 1; j <= i; j += 1) {
-      highestValue = Math.max(highestValue, src[j]);
-    }
-    out[i] = highestValue;
-  }
-  return out;
-}
-
-function rollingMin(src, length) {
-  const out = makeArray(src.length, NaN);
-  for (let i = 0; i < src.length; i += 1) {
-    if (i < length - 1) continue;
-    let lowestValue = Infinity;
-    for (let j = i - length + 1; j <= i; j += 1) {
-      lowestValue = Math.min(lowestValue, src[j]);
-    }
-    out[i] = lowestValue;
-  }
-  return out;
-}
-
-function trueRange(high, low, close) {
-  const out = makeArray(high.length, NaN);
-  for (let i = 0; i < high.length; i += 1) {
-    if (i === 0) {
-      out[i] = high[i] - low[i];
-      continue;
-    }
-    const hl = high[i] - low[i];
-    const hc = Math.abs(high[i] - close[i - 1]);
-    const lc = Math.abs(low[i] - close[i - 1]);
-    out[i] = Math.max(hl, hc, lc);
-  }
-  return out;
-}
-
-function calcAtr(high, low, close, length) {
-  return rma(trueRange(high, low, close), length);
-}
-
-function calcRsi(src, length) {
-  const gains = makeArray(src.length, NaN);
-  const losses = makeArray(src.length, NaN);
-  gains[0] = 0;
-  losses[0] = 0;
-
-  for (let i = 1; i < src.length; i += 1) {
-    const ch = src[i] - src[i - 1];
-    gains[i] = Math.max(ch, 0);
-    losses[i] = Math.max(-ch, 0);
-  }
-
-  const avgGain = rma(gains, length);
-  const avgLoss = rma(losses, length);
-  const out = makeArray(src.length, NaN);
-
-  for (let i = 0; i < src.length; i += 1) {
-    if (!Number.isFinite(avgGain[i]) || !Number.isFinite(avgLoss[i])) continue;
-    if (avgLoss[i] === 0) {
-      out[i] = 100;
-      continue;
-    }
-    const rs = avgGain[i] / avgLoss[i];
-    out[i] = 100 - 100 / (1 + rs);
-  }
-
-  return out;
-}
-
-function calcCci(src, length) {
-  const ma = calcSma(src, length);
-  const out = makeArray(src.length, NaN);
-
-  for (let i = 0; i < src.length; i += 1) {
-    if (i < length - 1 || !Number.isFinite(ma[i])) continue;
-
-    let meanDev = 0;
-    for (let j = i - length + 1; j <= i; j += 1) {
-      meanDev += Math.abs(src[j] - ma[i]);
-    }
-    meanDev /= length;
-    out[i] = meanDev === 0 ? 0 : (src[i] - ma[i]) / (0.015 * meanDev);
-  }
-
-  return out;
-}
-
-function calcAdx(high, low, close, length) {
-  const plusDM = makeArray(high.length, 0);
-  const minusDM = makeArray(high.length, 0);
-  const tr = trueRange(high, low, close);
-
-  for (let i = 1; i < high.length; i += 1) {
-    const upMove = high[i] - high[i - 1];
-    const downMove = low[i - 1] - low[i];
-    plusDM[i] = upMove > downMove && upMove > 0 ? upMove : 0;
-    minusDM[i] = downMove > upMove && downMove > 0 ? downMove : 0;
-  }
-
-  const plusRma = rma(plusDM, length);
-  const minusRma = rma(minusDM, length);
-  const trRma = rma(tr, length);
-  const dx = makeArray(high.length, NaN);
-
-  for (let i = 0; i < high.length; i += 1) {
-    if (
-      !Number.isFinite(plusRma[i]) ||
-      !Number.isFinite(minusRma[i]) ||
-      !Number.isFinite(trRma[i]) ||
-      trRma[i] === 0
-    ) continue;
-
-    const plusDI = 100 * plusRma[i] / trRma[i];
-    const minusDI = 100 * minusRma[i] / trRma[i];
-    const denom = plusDI + minusDI;
-    dx[i] = denom === 0 ? 0 : 100 * Math.abs(plusDI - minusDI) / denom;
-  }
-
-  return rma(dx, length);
-}
-
-function waveTrend(hlc3, n1, n2) {
-  const esa = calcEma(hlc3, n1);
-  const absDev = makeArray(hlc3.length, NaN);
-
-  for (let i = 0; i < hlc3.length; i += 1) {
-    absDev[i] = Number.isFinite(esa[i]) ? Math.abs(hlc3[i] - esa[i]) : NaN;
-  }
-
-  const d = calcEma(absDev, n1);
-  const ci = makeArray(hlc3.length, NaN);
-
-  for (let i = 0; i < hlc3.length; i += 1) {
-    ci[i] = Number.isFinite(d[i]) && d[i] !== 0 ? (hlc3[i] - esa[i]) / (0.015 * d[i]) : NaN;
-  }
-
-  const wt1 = calcEma(ci, n2);
-  const wt2 = calcSma(wt1, 4);
-  return { wt1, wt2 };
-}
-
-function normalizeUnbounded(src, lookback = 200, newMin = -1, newMax = 1) {
-  const out = makeArray(src.length, NaN);
-
-  for (let i = 0; i < src.length; i += 1) {
-    const start = Math.max(0, i - lookback + 1);
-    let lo = Infinity;
-    let hi = -Infinity;
-
-    for (let j = start; j <= i; j += 1) {
-      const currentValue = src[j];
-      if (!Number.isFinite(currentValue)) continue;
-      lo = Math.min(lo, currentValue);
-      hi = Math.max(hi, currentValue);
-    }
-
-    if (!Number.isFinite(src[i])) continue;
-    out[i] = hi === lo ? 0 : rescale(src[i], lo, hi, newMin, newMax);
-  }
-
-  return out;
-}
-
-function crossover(a, b) {
-  const out = makeArray(a.length, false);
-
-  for (let i = 1; i < a.length; i += 1) {
-    out[i] =
-      Number.isFinite(a[i - 1]) &&
-      Number.isFinite(b[i - 1]) &&
-      Number.isFinite(a[i]) &&
-      Number.isFinite(b[i])
-        ? a[i - 1] < b[i - 1] && a[i] >= b[i]
-        : false;
-  }
-
-  return out;
-}
-
-function crossunder(a, b) {
-  const out = makeArray(a.length, false);
-
-  for (let i = 1; i < a.length; i += 1) {
-    out[i] =
-      Number.isFinite(a[i - 1]) &&
-      Number.isFinite(b[i - 1]) &&
-      Number.isFinite(a[i]) &&
-      Number.isFinite(b[i])
-        ? a[i - 1] > b[i - 1] && a[i] <= b[i]
-        : false;
-  }
-
-  return out;
-}
-
-function barsSince(condition) {
-  const out = makeArray(condition.length, Infinity);
-  let lastTrue = -Infinity;
-
-  for (let i = 0; i < condition.length; i += 1) {
-    if (condition[i]) lastTrue = i;
-    out[i] = Number.isFinite(lastTrue) ? i - lastTrue : Infinity;
-  }
-
-  return out;
-}
-
-function rationalQuadraticKernel(src, lookback, relativeWeight, startAtBar) {
-  const out = makeArray(src.length, NaN);
-  const denomBase = 2 * relativeWeight * lookback * lookback;
-
-  for (let i = 0; i < src.length; i += 1) {
-    if (i < startAtBar) continue;
-
-    let numerator = 0;
-    let denominator = 0;
-    const last = Math.min(i, lookback - 1);
-
-    for (let j = 0; j <= last; j += 1) {
-      const currentValue = src[i - j];
-      if (!Number.isFinite(currentValue)) continue;
-      const weight = Math.pow(1 + (j * j) / Math.max(1e-12, denomBase), -relativeWeight);
-      numerator += currentValue * weight;
-      denominator += weight;
-    }
-
-    out[i] = denominator === 0 ? NaN : numerator / denominator;
-  }
-
-  return out;
-}
-
-function gaussianKernel(src, lookback, startAtBar) {
-  const out = makeArray(src.length, NaN);
-  const sigma2 = lookback * lookback;
-
-  for (let i = 0; i < src.length; i += 1) {
-    if (i < startAtBar) continue;
-
-    let numerator = 0;
-    let denominator = 0;
-    const last = Math.min(i, lookback - 1);
-
-    for (let j = 0; j <= last; j += 1) {
-      const currentValue = src[i - j];
-      if (!Number.isFinite(currentValue)) continue;
-      const weight = Math.exp(-(j * j) / Math.max(1e-12, 2 * sigma2));
-      numerator += currentValue * weight;
-      denominator += weight;
-    }
-
-    out[i] = denominator === 0 ? NaN : numerator / denominator;
-  }
-
-  return out;
-}
-
-const ml = {
-  nRsi(src, n1, n2) {
-    const base = calcRsi(src, n1);
-    const smooth = n2 > 1 ? calcEma(base, n2) : base;
-    return smooth.map((v) => (Number.isFinite(v) ? rescale(v, 0, 100, -1, 1) : NaN));
-  },
-
-  nWt(src, n1, n2) {
-    const wt = waveTrend(src, n1, n2);
-    return wt.wt1.map((v) => (Number.isFinite(v) ? Math.tanh(v / 100) : NaN));
-  },
-
-  nCci(src, n1, n2) {
-    const base = calcCci(src, n1);
-    const smooth = n2 > 1 ? calcEma(base, n2) : base;
-    return smooth.map((v) => (Number.isFinite(v) ? Math.tanh(v / 100) : NaN));
-  },
-
-  nAdx(high, low, close, n1) {
-    const base = calcAdx(high, low, close, n1);
-    return base.map((v) => (Number.isFinite(v) ? rescale(v, 0, 100, -1, 1) : NaN));
-  },
-
-  filterVolatility(high, low, close, minLength, maxLength, useVolatilityFilter) {
-    if (!useVolatilityFilter) return Array.from({ length: close.length }, () => true);
-    const shortAtr = calcAtr(high, low, close, minLength);
-    const longAtr = calcAtr(high, low, close, maxLength);
-    return shortAtr.map((v, i) =>
-      Number.isFinite(v) && Number.isFinite(longAtr[i]) ? v > longAtr[i] : false
-    );
-  },
-
-  regimeFilter(src, threshold, useRegimeFilter, lookback = 20) {
-    if (!useRegimeFilter) return Array.from({ length: src.length }, () => true);
-
-    const out = makeArray(src.length, false);
-    for (let i = 0; i < src.length; i += 1) {
-      if (i < lookback || !Number.isFinite(src[i - lookback]) || src[i - lookback] === 0) continue;
-      const regimeValue = (src[i] - src[i - lookback]) / Math.abs(src[i - lookback]);
-      out[i] = regimeValue > threshold;
+function normalizeBounded(series, oldMin, oldMax) {
+    const out = newSeries(null);
+    const denominator = oldMax - oldMin;
+    for (let index = 0; index < candleCount; index++) {
+        const value = series[index];
+        out[index] = isValidNumber(value) ? (((value - oldMin) / denominator) * 2) - 1 : null;
     }
     return out;
-  },
+}
 
-  filterAdx(high, low, close, length, adxThreshold, useAdxFilter) {
-    if (!useAdxFilter) return Array.from({ length: close.length }, () => true);
-    const adxSeries = calcAdx(high, low, close, length);
-    return adxSeries.map((v) => (Number.isFinite(v) ? v > adxThreshold : false));
-  },
+function normalizeUnbounded(series, scale) {
+    const out = newSeries(null);
+    for (let index = 0; index < candleCount; index++) {
+        const value = series[index];
+        out[index] = isValidNumber(value) ? Math.tanh(value / scale) : null;
+    }
+    return out;
+}
 
-  backtest(payload) {
-    const {
-      open,
-      startLongTrade,
-      endLongTrade,
-      startShortTrade,
-      endShortTrade,
-      isEarlySignalFlip,
-      useWorstCase,
-    } = payload;
+function waveTrendClassic(priceSeries, channelLength, averageLength) {
+    const esa = ema(priceSeries, channelLength);
+    const absDeviation = for_every(priceSeries, esa, function(priceValue, esaValue) {
+        if (!isValidNumber(priceValue) || !isValidNumber(esaValue)) {
+            return null;
+        }
+        return Math.abs(priceValue - esaValue);
+    });
+    const deviationAverage = ema(absDeviation, channelLength);
+    const ci = for_every(priceSeries, esa, deviationAverage, function(priceValue, esaValue, deviationValue) {
+        if (!isValidNumber(priceValue) || !isValidNumber(esaValue) || !isValidNumber(deviationValue) || deviationValue === 0) {
+            return null;
+        }
+        return (priceValue - esaValue) / (0.015 * deviationValue);
+    });
+    const wt1 = ema(ci, averageLength);
+    const wt2 = sma(wt1, 4);
+    const oscillator = for_every(wt1, wt2, function(primary, signal) {
+        if (!isValidNumber(primary) || !isValidNumber(signal)) {
+            return null;
+        }
+        return primary - signal;
+    });
+    return {
+        wt1,
+        wt2,
+        oscillator
+    };
+}
 
-    let inPosition = 0;
-    let entryPrice = NaN;
-    let totalWins = 0;
-    let totalLosses = 0;
-    let totalTrades = 0;
-    let totalEarlySignalFlips = 0;
+function getFeatureSeries(featureType, paramA, paramB) {
+    if (featureType === 'RSI') {
+        const base = rsi(close, paramA);
+        const smoothed = paramB > 1 ? sma(base, paramB) : base;
+        return normalizeBounded(smoothed, 0, 100);
+    }
+    if (featureType === 'WT') {
+        const waveTrend = waveTrendClassic(hlc3, paramA, paramB);
+        return normalizeUnbounded(waveTrend.wt1, 60);
+    }
+    if (featureType === 'CCI') {
+        const base = cci(close, paramA);
+        const smoothed = paramB > 1 ? sma(base, paramB) : base;
+        return normalizeUnbounded(smoothed, 100);
+    }
+    const adxObject = indicators.adx(paramA);
+    return normalizeBounded(adxObject.adx, 0, 100);
+}
 
-    for (let i = 0; i < open.length; i += 1) {
-      if (isEarlySignalFlip[i]) totalEarlySignalFlips += 1;
+function rationalQuadraticKernel(series, lookback, relativeWeight, startAtBar) {
+    const out = newSeries(null);
+    for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+        if (barIndex < startAtBar) {
+            out[barIndex] = null;
+            continue;
+        }
+        let weightedTotal = 0;
+        let weightTotal = 0;
+        const maxLag = Math.min(lookback - 1, barIndex);
+        for (let lagIndex = 0; lagIndex <= maxLag; lagIndex++) {
+            const value = series[barIndex - lagIndex];
+            if (!isValidNumber(value)) {
+                continue;
+            }
+            const weight = Math.pow(1 + ((lagIndex * lagIndex) / (((lookback * lookback) * 2) * relativeWeight)), -relativeWeight);
+            weightedTotal += value * weight;
+            weightTotal += weight;
+        }
+        out[barIndex] = weightTotal === 0 ? null : weightedTotal / weightTotal;
+    }
+    return out;
+}
 
-      if (inPosition === 0) {
-        if (startLongTrade[i]) {
-          inPosition = 1;
-          entryPrice = useWorstCase ? closeOr(open, i) : open[i];
-          totalTrades += 1;
-        } else if (startShortTrade[i]) {
-          inPosition = -1;
-          entryPrice = useWorstCase ? closeOr(open, i) : open[i];
-          totalTrades += 1;
+function gaussianKernel(series, lookback, startAtBar) {
+    const out = newSeries(null);
+    for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+        if (barIndex < startAtBar) {
+            out[barIndex] = null;
+            continue;
+        }
+        let weightedTotal = 0;
+        let weightTotal = 0;
+        const maxLag = Math.min(lookback - 1, barIndex);
+        for (let lagIndex = 0; lagIndex <= maxLag; lagIndex++) {
+            const value = series[barIndex - lagIndex];
+            if (!isValidNumber(value)) {
+                continue;
+            }
+            const weight = Math.exp(-((lagIndex * lagIndex) / (2 * lookback * lookback)));
+            weightedTotal += value * weight;
+            weightTotal += weight;
+        }
+        out[barIndex] = weightTotal === 0 ? null : weightedTotal / weightTotal;
+    }
+    return out;
+}
+
+function barsSince(signalSeries) {
+    const out = newSeries(candleCount + 1);
+    let counter = candleCount + 1;
+    for (let index = 0; index < candleCount; index++) {
+        if (signalSeries[index]) {
+            counter = 0;
+        } else if (counter < candleCount + 1) {
+            counter += 1;
+        }
+        out[index] = counter;
+    }
+    return out;
+}
+
+function predictionColor(predictionValue, compressionFactor) {
+    if (!isValidNumber(predictionValue)) {
+        return neutralColor;
+    }
+    const boundedCompression = Math.max(1, compressionFactor);
+    if (predictionValue > 0) {
+        const ratio = clamp(predictionValue / boundedCompression, 0, 1);
+        return mixColors(neutralColor, bullishGradientBase, ratio);
+    }
+    if (predictionValue < 0) {
+        const ratio = clamp(Math.abs(predictionValue) / boundedCompression, 0, 1);
+        return mixColors(bearishGradientBase, neutralColor, 1 - ratio);
+    }
+    return neutralColor;
+}
+
+function textCell(text, background) {
+    return {
+        text,
+        color: 'var(--text-color)',
+        background: background || 'transparent',
+        paddingTop: 2,
+        paddingBottom: 2,
+        paddingLeft: 4,
+        paddingRight: 4
+    };
+}
+
+const feature1Series = getFeatureSeries(feature1Type, feature1ParamA, feature1ParamB);
+const feature2Series = getFeatureSeries(feature2Type, feature2ParamA, feature2ParamB);
+const feature3Series = getFeatureSeries(feature3Type, feature3ParamA, feature3ParamB);
+const feature4Series = getFeatureSeries(feature4Type, feature4ParamA, feature4ParamB);
+const feature5Series = getFeatureSeries(feature5Type, feature5ParamA, feature5ParamB);
+const featureSeriesList = [feature1Series, feature2Series, feature3Series, feature4Series, feature5Series];
+
+const emaFilterLine = ema(close, emaPeriod);
+const smaFilterLine = sma(close, smaPeriod);
+const atrFast = atr(1);
+const atrSlow = atr(10);
+const regimeBaseline = ema(ohlc4, 20);
+const adx14 = indicators.adx(14).adx;
+
+const isEmaUptrend = newSeries(true);
+const isEmaDowntrend = newSeries(true);
+const isSmaUptrend = newSeries(true);
+const isSmaDowntrend = newSeries(true);
+const volatilityFilter = newSeries(true);
+const regimeFilter = newSeries(true);
+const adxFilter = newSeries(true);
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    const priceValue = close[barIndex];
+    const emaValue = emaFilterLine[barIndex];
+    const smaValue = smaFilterLine[barIndex];
+    isEmaUptrend[barIndex] = !useEmaFilter || (isValidNumber(priceValue) && isValidNumber(emaValue) && priceValue > emaValue);
+    isEmaDowntrend[barIndex] = !useEmaFilter || (isValidNumber(priceValue) && isValidNumber(emaValue) && priceValue < emaValue);
+    isSmaUptrend[barIndex] = !useSmaFilter || (isValidNumber(priceValue) && isValidNumber(smaValue) && priceValue > smaValue);
+    isSmaDowntrend[barIndex] = !useSmaFilter || (isValidNumber(priceValue) && isValidNumber(smaValue) && priceValue < smaValue);
+
+    const fastAtrValue = atrFast[barIndex];
+    const slowAtrValue = atrSlow[barIndex];
+    volatilityFilter[barIndex] = !useVolatilityFilter || (isValidNumber(fastAtrValue) && isValidNumber(slowAtrValue) && fastAtrValue > slowAtrValue);
+
+    const baselineValue = regimeBaseline[barIndex];
+    const previousBaseline = barIndex > 0 ? regimeBaseline[barIndex - 1] : null;
+    const volatilityDenominator = atrSlow[barIndex];
+    const regimeValue = isValidNumber(baselineValue) && isValidNumber(previousBaseline) && isValidNumber(volatilityDenominator) && volatilityDenominator !== 0
+        ? ((baselineValue - previousBaseline) / volatilityDenominator) * 100
+        : 0;
+    regimeFilter[barIndex] = !useRegimeFilter || regimeValue > regimeThreshold;
+
+    const adxValue = adx14[barIndex];
+    adxFilter[barIndex] = !useAdxFilter || (isValidNumber(adxValue) && adxValue >= adxThreshold);
+}
+
+const yTrain = newSeries(0);
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    if (barIndex + 4 >= candleCount) {
+        yTrain[barIndex] = 0;
+        continue;
+    }
+    if (sourceSeries[barIndex + 4] > sourceSeries[barIndex]) {
+        yTrain[barIndex] = 1;
+    } else if (sourceSeries[barIndex + 4] < sourceSeries[barIndex]) {
+        yTrain[barIndex] = -1;
+    } else {
+        yTrain[barIndex] = 0;
+    }
+}
+
+const predictionSeries = newSeries(0);
+const signalSeries = newSeries(0);
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    const previousSignal = barIndex > 0 ? signalSeries[barIndex - 1] : 0;
+    if (barIndex < maxBarsBackIndex) {
+        signalSeries[barIndex] = previousSignal;
+        continue;
+    }
+
+    const trainEnd = barIndex - 4;
+    if (trainEnd <= 0) {
+        signalSeries[barIndex] = previousSignal;
+        continue;
+    }
+
+    const trainStart = Math.max(0, trainEnd - maxBarsBack + 1);
+    let lastDistance = -1;
+    const localDistances = [];
+    const localPredictions = [];
+
+    for (let trainIndex = trainStart; trainIndex <= trainEnd; trainIndex++) {
+        if ((trainIndex % 4) === 0) {
+            continue;
+        }
+        let distance = 0;
+        let validDistance = true;
+        for (let featureIndex = 0; featureIndex < featureCount; featureIndex++) {
+            const currentFeatureValue = featureSeriesList[featureIndex][barIndex];
+            const historicalFeatureValue = featureSeriesList[featureIndex][trainIndex];
+            if (!isValidNumber(currentFeatureValue) || !isValidNumber(historicalFeatureValue)) {
+                validDistance = false;
+                break;
+            }
+            distance += Math.log(1 + Math.abs(currentFeatureValue - historicalFeatureValue));
+        }
+
+        if (!validDistance) {
+            continue;
+        }
+
+        if (distance >= lastDistance) {
+            lastDistance = distance;
+            localDistances.push(distance);
+            localPredictions.push(yTrain[trainIndex]);
+            if (localPredictions.length > neighborsCount) {
+                const quartileIndex = Math.min(localDistances.length - 1, Math.round((neighborsCount * 3) / 4));
+                lastDistance = localDistances[quartileIndex];
+                localDistances.shift();
+                localPredictions.shift();
+            }
+        }
+    }
+
+    const predictionValue = localPredictions.length > 0 ? sumNumbers(localPredictions) : 0;
+    predictionSeries[barIndex] = predictionValue;
+
+    const filterAll = volatilityFilter[barIndex] && regimeFilter[barIndex] && adxFilter[barIndex];
+    if (predictionValue > 0 && filterAll) {
+        signalSeries[barIndex] = 1;
+    } else if (predictionValue < 0 && filterAll) {
+        signalSeries[barIndex] = -1;
+    } else {
+        signalSeries[barIndex] = previousSignal;
+    }
+}
+
+const kernelEstimate = rationalQuadraticKernel(sourceSeries, kernelLookback, kernelRelativeWeight, kernelStartAtBar);
+const gaussianLookback = Math.max(1, kernelLookback - kernelLag);
+const kernelEstimateLagged = gaussianKernel(sourceSeries, gaussianLookback, kernelStartAtBar);
+const kernelColorSeries = newSeries(transparentColor);
+const isBullishRate = newSeries(false);
+const isBearishRate = newSeries(false);
+const isBullishChange = newSeries(false);
+const isBearishChange = newSeries(false);
+const isBullishCrossAlert = newSeries(false);
+const isBearishCrossAlert = newSeries(false);
+const isBullishSmooth = newSeries(false);
+const isBearishSmooth = newSeries(false);
+const alertBullish = newSeries(false);
+const alertBearish = newSeries(false);
+const isBullish = newSeries(true);
+const isBearish = newSeries(true);
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    const currentKernel = kernelEstimate[barIndex];
+    const previousKernel = barIndex > 0 ? kernelEstimate[barIndex - 1] : null;
+    const twoBarsBackKernel = barIndex > 1 ? kernelEstimate[barIndex - 2] : null;
+    const currentLagged = kernelEstimateLagged[barIndex];
+    const previousLagged = barIndex > 0 ? kernelEstimateLagged[barIndex - 1] : null;
+
+    const bullishRateNow = isValidNumber(currentKernel) && isValidNumber(previousKernel) && previousKernel < currentKernel;
+    const bearishRateNow = isValidNumber(currentKernel) && isValidNumber(previousKernel) && previousKernel > currentKernel;
+    const wasBullishRate = isValidNumber(twoBarsBackKernel) && isValidNumber(previousKernel) && twoBarsBackKernel < previousKernel;
+    const wasBearishRate = isValidNumber(twoBarsBackKernel) && isValidNumber(previousKernel) && twoBarsBackKernel > previousKernel;
+
+    isBullishRate[barIndex] = bullishRateNow;
+    isBearishRate[barIndex] = bearishRateNow;
+    isBullishChange[barIndex] = bullishRateNow && wasBearishRate;
+    isBearishChange[barIndex] = bearishRateNow && wasBullishRate;
+
+    const bullishCross = isValidNumber(previousLagged) && isValidNumber(previousKernel) && isValidNumber(currentLagged) && isValidNumber(currentKernel)
+        && previousLagged < previousKernel && currentLagged >= currentKernel;
+    const bearishCross = isValidNumber(previousLagged) && isValidNumber(previousKernel) && isValidNumber(currentLagged) && isValidNumber(currentKernel)
+        && previousLagged > previousKernel && currentLagged <= currentKernel;
+    isBullishCrossAlert[barIndex] = bullishCross;
+    isBearishCrossAlert[barIndex] = bearishCross;
+
+    const bullishSmooth = isValidNumber(currentLagged) && isValidNumber(currentKernel) && currentLagged >= currentKernel;
+    const bearishSmooth = isValidNumber(currentLagged) && isValidNumber(currentKernel) && currentLagged <= currentKernel;
+    isBullishSmooth[barIndex] = bullishSmooth;
+    isBearishSmooth[barIndex] = bearishSmooth;
+
+    alertBullish[barIndex] = useKernelSmoothing ? bullishCross : isBullishChange[barIndex];
+    alertBearish[barIndex] = useKernelSmoothing ? bearishCross : isBearishChange[barIndex];
+
+    isBullish[barIndex] = !useKernelFilter || (useKernelSmoothing ? bullishSmooth : bullishRateNow);
+    isBearish[barIndex] = !useKernelFilter || (useKernelSmoothing ? bearishSmooth : bearishRateNow);
+
+    if (!showKernelEstimate) {
+        kernelColorSeries[barIndex] = transparentColor;
+    } else if (useKernelSmoothing) {
+        kernelColorSeries[barIndex] = bullishSmooth ? bullishKernelColor : bearishKernelColor;
+    } else {
+        kernelColorSeries[barIndex] = bullishRateNow ? bullishKernelColor : bearishKernelColor;
+    }
+}
+
+const barsHeld = newSeries(0);
+const isHeldFourBars = newSeries(false);
+const isHeldLessThanFourBars = newSeries(false);
+const isDifferentSignalType = newSeries(false);
+const isEarlySignalFlip = newSeries(false);
+const isBuySignal = newSeries(false);
+const isSellSignal = newSeries(false);
+const isLastSignalBuy = newSeries(false);
+const isLastSignalSell = newSeries(false);
+const isNewBuySignal = newSeries(false);
+const isNewSellSignal = newSeries(false);
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    const previousSignal = barIndex > 0 ? signalSeries[barIndex - 1] : 0;
+    const changed = signalSeries[barIndex] !== previousSignal;
+    isDifferentSignalType[barIndex] = changed;
+    barsHeld[barIndex] = changed ? 0 : (barIndex > 0 ? barsHeld[barIndex - 1] + 1 : 0);
+    isHeldFourBars[barIndex] = barsHeld[barIndex] === 4;
+    isHeldLessThanFourBars[barIndex] = barsHeld[barIndex] > 0 && barsHeld[barIndex] < 4;
+
+    const priorChange1 = barIndex > 0 ? isDifferentSignalType[barIndex - 1] : false;
+    const priorChange2 = barIndex > 1 ? isDifferentSignalType[barIndex - 2] : false;
+    const priorChange3 = barIndex > 2 ? isDifferentSignalType[barIndex - 3] : false;
+    isEarlySignalFlip[barIndex] = changed && (priorChange1 || priorChange2 || priorChange3);
+
+    isBuySignal[barIndex] = signalSeries[barIndex] === 1 && isEmaUptrend[barIndex] && isSmaUptrend[barIndex];
+    isSellSignal[barIndex] = signalSeries[barIndex] === -1 && isEmaDowntrend[barIndex] && isSmaDowntrend[barIndex];
+
+    const lastIndex = barIndex - 4;
+    isLastSignalBuy[barIndex] = lastIndex >= 0 && signalSeries[lastIndex] === 1 && isEmaUptrend[lastIndex] && isSmaUptrend[lastIndex];
+    isLastSignalSell[barIndex] = lastIndex >= 0 && signalSeries[lastIndex] === -1 && isEmaDowntrend[lastIndex] && isSmaDowntrend[lastIndex];
+    isNewBuySignal[barIndex] = isBuySignal[barIndex] && changed;
+    isNewSellSignal[barIndex] = isSellSignal[barIndex] && changed;
+}
+
+const startLongTrade = newSeries(false);
+const startShortTrade = newSeries(false);
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    startLongTrade[barIndex] = isNewBuySignal[barIndex] && isBullish[barIndex] && isEmaUptrend[barIndex] && isSmaUptrend[barIndex];
+    startShortTrade[barIndex] = isNewSellSignal[barIndex] && isBearish[barIndex] && isEmaDowntrend[barIndex] && isSmaDowntrend[barIndex];
+}
+
+const barsSinceShortEntry = barsSince(startShortTrade);
+const barsSinceBullishAlert = barsSince(alertBullish);
+const barsSinceLongEntry = barsSince(startLongTrade);
+const barsSinceBearishAlert = barsSince(alertBearish);
+const isValidShortExit = newSeries(false);
+const isValidLongExit = newSeries(false);
+const endLongTradeDynamic = newSeries(false);
+const endShortTradeDynamic = newSeries(false);
+const endLongTradeStrict = newSeries(false);
+const endShortTradeStrict = newSeries(false);
+const endLongTrade = newSeries(false);
+const endShortTrade = newSeries(false);
+const isDynamicExitValid = !useEmaFilter && !useSmaFilter && !useKernelSmoothing;
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    isValidShortExit[barIndex] = barsSinceBullishAlert[barIndex] > barsSinceShortEntry[barIndex];
+    isValidLongExit[barIndex] = barsSinceBearishAlert[barIndex] > barsSinceLongEntry[barIndex];
+
+    const previousLongExitValidity = barIndex > 0 ? isValidLongExit[barIndex - 1] : false;
+    const previousShortExitValidity = barIndex > 0 ? isValidShortExit[barIndex - 1] : false;
+    endLongTradeDynamic[barIndex] = isBearishChange[barIndex] && previousLongExitValidity;
+    endShortTradeDynamic[barIndex] = isBullishChange[barIndex] && previousShortExitValidity;
+
+    const startLongFourBarsAgo = barIndex >= 4 ? startLongTrade[barIndex - 4] : false;
+    const startShortFourBarsAgo = barIndex >= 4 ? startShortTrade[barIndex - 4] : false;
+    endLongTradeStrict[barIndex] = (((isHeldFourBars[barIndex] && isLastSignalBuy[barIndex]) || (isHeldLessThanFourBars[barIndex] && isNewSellSignal[barIndex] && isLastSignalBuy[barIndex])) && startLongFourBarsAgo);
+    endShortTradeStrict[barIndex] = (((isHeldFourBars[barIndex] && isLastSignalSell[barIndex]) || (isHeldLessThanFourBars[barIndex] && isNewBuySignal[barIndex] && isLastSignalSell[barIndex])) && startShortFourBarsAgo);
+
+    endLongTrade[barIndex] = useDynamicExits && isDynamicExitValid ? endLongTradeDynamic[barIndex] : endLongTradeStrict[barIndex];
+    endShortTrade[barIndex] = useDynamicExits && isDynamicExitValid ? endShortTradeDynamic[barIndex] : endShortTradeStrict[barIndex];
+}
+
+const compressionFactor = neighborsCount / colorCompression;
+const predictionTextColors = newSeries(neutralColor);
+const candleColors = newSeries(null);
+const buyLabels = newSeries(null);
+const sellLabels = newSeries(null);
+const exitLongLabels = newSeries(null);
+const exitShortLabels = newSeries(null);
+const predictionLabelsAbove = newSeries(null);
+const predictionLabelsBelow = newSeries(null);
+const backtestStream = newSeries(0);
+
+for (let barIndex = 0; barIndex < candleCount; barIndex++) {
+    const predictionValue = predictionSeries[barIndex];
+    const basePredictionColor = predictionColor(predictionValue, compressionFactor);
+    predictionTextColors[barIndex] = basePredictionColor;
+    candleColors[barIndex] = showBarColors ? withAlpha(basePredictionColor, 0.50) : null;
+
+    if (startLongTrade[barIndex]) {
+        buyLabels[barIndex] = 'Buy';
+    }
+    if (startShortTrade[barIndex]) {
+        sellLabels[barIndex] = 'Sell';
+    }
+    if (showExits && endLongTrade[barIndex]) {
+        exitLongLabels[barIndex] = 'Exit L';
+    }
+    if (showExits && endShortTrade[barIndex]) {
+        exitShortLabels[barIndex] = 'Exit S';
+    }
+    if (showBarPredictions && predictionValue > 0) {
+        predictionLabelsAbove[barIndex] = String(predictionValue);
+    }
+    if (showBarPredictions && predictionValue < 0) {
+        predictionLabelsBelow[barIndex] = String(predictionValue);
+    }
+
+    if (startLongTrade[barIndex]) {
+        backtestStream[barIndex] = 1;
+    } else if (endLongTrade[barIndex]) {
+        backtestStream[barIndex] = 2;
+    } else if (startShortTrade[barIndex]) {
+        backtestStream[barIndex] = -1;
+    } else if (endShortTrade[barIndex]) {
+        backtestStream[barIndex] = -2;
+    } else {
+        backtestStream[barIndex] = 0;
+    }
+}
+
+let totalWins = 0;
+let totalLosses = 0;
+let totalTrades = 0;
+let totalEarlySignalFlips = 0;
+let currentPosition = 0;
+let entryPrice = null;
+
+for (let barIndex = Math.max(maxBarsBackIndex, 0); barIndex < candleCount; barIndex++) {
+    if (isEarlySignalFlip[barIndex]) {
+        totalEarlySignalFlips += 1;
+    }
+
+    if (currentPosition === 0) {
+        if (startLongTrade[barIndex]) {
+            currentPosition = 1;
+            totalTrades += 1;
+            entryPrice = useWorstCase ? close[barIndex] : ohlc4[barIndex];
+        } else if (startShortTrade[barIndex]) {
+            currentPosition = -1;
+            totalTrades += 1;
+            entryPrice = useWorstCase ? close[barIndex] : ohlc4[barIndex];
         }
         continue;
-      }
-
-      if (inPosition === 1 && endLongTrade[i]) {
-        const exitPrice = useWorstCase ? closeOr(open, i) : open[i];
-        if (exitPrice >= entryPrice) totalWins += 1;
-        else totalLosses += 1;
-        inPosition = 0;
-        entryPrice = NaN;
-      }
-
-      if (inPosition === -1 && endShortTrade[i]) {
-        const exitPrice = useWorstCase ? closeOr(open, i) : open[i];
-        if (exitPrice <= entryPrice) totalWins += 1;
-        else totalLosses += 1;
-        inPosition = 0;
-        entryPrice = NaN;
-      }
     }
 
-    const winRate = totalTrades === 0 ? 0 : totalWins / totalTrades;
-    const winLossRatio =
-      totalLosses === 0 ? (totalWins > 0 ? Infinity : 0) : totalWins / totalLosses;
-
-    return {
-      totalWins,
-      totalLosses,
-      totalEarlySignalFlips,
-      totalTrades,
-      tradeStatsHeader: 'Trade Stats',
-      winLossRatio,
-      winRate,
-    };
-  },
-};
-
-function closeOr(openSeries, index) {
-  return openSeries[index];
-}
-
-const kernels = {
-  rationalQuadratic: rationalQuadraticKernel,
-  gaussian: gaussianKernel,
-};
-
-function seriesShift(arr, index, offset, fallback = NaN) {
-  const k = index - offset;
-  return k >= 0 && k < arr.length ? arr[k] : fallback;
-}
-
-function change(arr, index) {
-  if (index <= 0) return 0;
-  const a = arr[index];
-  const b = arr[index - 1];
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-  return a - b;
-}
-
-function boolAt(arr, idx) {
-  return idx >= 0 && idx < arr.length ? Boolean(arr[idx]) : false;
-}
-
-const DEFAULT_SETTINGS = {
-  sourceKey: 'close',
-  neighborsCount: 8,
-  maxBarsBack: 2000,
-  featureCount: 5,
-  colorCompression: 1,
-  showExits: false,
-  useDynamicExits: false,
-  showTradeStats: true,
-  useWorstCase: false,
-  filterSettings: {
-    useVolatilityFilter: true,
-    useRegimeFilter: true,
-    useAdxFilter: false,
-    regimeThreshold: -0.1,
-    adxThreshold: 20,
-  },
-  features: [
-    { type: 'RSI', paramA: 14, paramB: 1 },
-    { type: 'WT', paramA: 10, paramB: 11 },
-    { type: 'CCI', paramA: 20, paramB: 1 },
-    { type: 'ADX', paramA: 20, paramB: 2 },
-    { type: 'RSI', paramA: 9, paramB: 1 },
-  ],
-  useEmaFilter: false,
-  emaPeriod: 200,
-  useSmaFilter: false,
-  smaPeriod: 200,
-  useKernelFilter: true,
-  showKernelEstimate: true,
-  useKernelSmoothing: false,
-  h: 8,
-  r: 8.0,
-  x: 25,
-  lag: 2,
-};
-
-function buildSettings(options) {
-  const inputOptions = options || {};
-  const inputFilterSettings = inputOptions.filterSettings || {};
-
-  return {
-    sourceKey:
-      inputOptions.sourceKey !== undefined ? inputOptions.sourceKey : DEFAULT_SETTINGS.sourceKey,
-    neighborsCount:
-      inputOptions.neighborsCount !== undefined
-        ? inputOptions.neighborsCount
-        : DEFAULT_SETTINGS.neighborsCount,
-    maxBarsBack:
-      inputOptions.maxBarsBack !== undefined
-        ? inputOptions.maxBarsBack
-        : DEFAULT_SETTINGS.maxBarsBack,
-    featureCount:
-      inputOptions.featureCount !== undefined
-        ? inputOptions.featureCount
-        : DEFAULT_SETTINGS.featureCount,
-    colorCompression:
-      inputOptions.colorCompression !== undefined
-        ? inputOptions.colorCompression
-        : DEFAULT_SETTINGS.colorCompression,
-    showExits:
-      inputOptions.showExits !== undefined ? inputOptions.showExits : DEFAULT_SETTINGS.showExits,
-    useDynamicExits:
-      inputOptions.useDynamicExits !== undefined
-        ? inputOptions.useDynamicExits
-        : DEFAULT_SETTINGS.useDynamicExits,
-    showTradeStats:
-      inputOptions.showTradeStats !== undefined
-        ? inputOptions.showTradeStats
-        : DEFAULT_SETTINGS.showTradeStats,
-    useWorstCase:
-      inputOptions.useWorstCase !== undefined
-        ? inputOptions.useWorstCase
-        : DEFAULT_SETTINGS.useWorstCase,
-    filterSettings: {
-      useVolatilityFilter:
-        inputFilterSettings.useVolatilityFilter !== undefined
-          ? inputFilterSettings.useVolatilityFilter
-          : DEFAULT_SETTINGS.filterSettings.useVolatilityFilter,
-      useRegimeFilter:
-        inputFilterSettings.useRegimeFilter !== undefined
-          ? inputFilterSettings.useRegimeFilter
-          : DEFAULT_SETTINGS.filterSettings.useRegimeFilter,
-      useAdxFilter:
-        inputFilterSettings.useAdxFilter !== undefined
-          ? inputFilterSettings.useAdxFilter
-          : DEFAULT_SETTINGS.filterSettings.useAdxFilter,
-      regimeThreshold:
-        inputFilterSettings.regimeThreshold !== undefined
-          ? inputFilterSettings.regimeThreshold
-          : DEFAULT_SETTINGS.filterSettings.regimeThreshold,
-      adxThreshold:
-        inputFilterSettings.adxThreshold !== undefined
-          ? inputFilterSettings.adxThreshold
-          : DEFAULT_SETTINGS.filterSettings.adxThreshold,
-    },
-    features: inputOptions.features !== undefined ? inputOptions.features : DEFAULT_SETTINGS.features,
-    useEmaFilter:
-      inputOptions.useEmaFilter !== undefined
-        ? inputOptions.useEmaFilter
-        : DEFAULT_SETTINGS.useEmaFilter,
-    emaPeriod:
-      inputOptions.emaPeriod !== undefined ? inputOptions.emaPeriod : DEFAULT_SETTINGS.emaPeriod,
-    useSmaFilter:
-      inputOptions.useSmaFilter !== undefined
-        ? inputOptions.useSmaFilter
-        : DEFAULT_SETTINGS.useSmaFilter,
-    smaPeriod:
-      inputOptions.smaPeriod !== undefined ? inputOptions.smaPeriod : DEFAULT_SETTINGS.smaPeriod,
-    useKernelFilter:
-      inputOptions.useKernelFilter !== undefined
-        ? inputOptions.useKernelFilter
-        : DEFAULT_SETTINGS.useKernelFilter,
-    showKernelEstimate:
-      inputOptions.showKernelEstimate !== undefined
-        ? inputOptions.showKernelEstimate
-        : DEFAULT_SETTINGS.showKernelEstimate,
-    useKernelSmoothing:
-      inputOptions.useKernelSmoothing !== undefined
-        ? inputOptions.useKernelSmoothing
-        : DEFAULT_SETTINGS.useKernelSmoothing,
-    h: inputOptions.h !== undefined ? inputOptions.h : DEFAULT_SETTINGS.h,
-    r: inputOptions.r !== undefined ? inputOptions.r : DEFAULT_SETTINGS.r,
-    x: inputOptions.x !== undefined ? inputOptions.x : DEFAULT_SETTINGS.x,
-    lag: inputOptions.lag !== undefined ? inputOptions.lag : DEFAULT_SETTINGS.lag,
-  };
-}
-
-function seriesFromFeature(featureType, close, high, low, hlc3, paramA, paramB) {
-  switch (featureType) {
-    case 'RSI':
-      return ml.nRsi(close, paramA, paramB);
-    case 'WT':
-      return ml.nWt(hlc3, paramA, paramB);
-    case 'CCI':
-      return ml.nCci(close, paramA, paramB);
-    case 'ADX':
-      return ml.nAdx(high, low, close, paramA);
-    default:
-      return ml.nRsi(close, paramA, paramB);
-  }
-}
-
-function getLorentzianDistance(i, featureSeries, settings) {
-  let d = 0;
-  const featureCount = settings.featureCount;
-
-  for (let k = 0; k < featureCount; k += 1) {
-    const currentFeature = featureSeries[k].current;
-    const historicalFeature = featureSeries[k].history[i];
-    d += Math.log(1 + Math.abs(currentFeature - historicalFeature));
-  }
-
-  return d;
-}
-
-function runLorentzianClassification(bars, options) {
-  const settings = buildSettings(options);
-  const n = bars.length;
-  if (n === 0) return null;
-
-  const openSeries = seriesFromBars(bars, 'open');
-  const highSeries = seriesFromBars(bars, 'high');
-  const lowSeries = seriesFromBars(bars, 'low');
-  const closeSeries = seriesFromBars(bars, 'close');
-  const volumeSeries = seriesFromBars(bars, 'volume');
-  const hlc3Series = bars.map((b) => (b.high + b.low + b.close) / 3);
-  const ohlc4Series = bars.map((b) => (b.open + b.high + b.low + b.close) / 4);
-
-  const sourceSeries = closeSeries;
-  const featureArrays = settings.features.map((f) =>
-    seriesFromFeature(
-      f.type,
-      closeSeries,
-      highSeries,
-      lowSeries,
-      hlc3Series,
-      f.paramA,
-      f.paramB
-    )
-  );
-
-  const emaSeries = calcEma(closeSeries, settings.emaPeriod);
-  const smaSeries = calcSma(closeSeries, settings.smaPeriod);
-
-  const isEmaUptrend = closeSeries.map((c, i) =>
-    settings.useEmaFilter ? c > emaSeries[i] : true
-  );
-  const isEmaDowntrend = closeSeries.map((c, i) =>
-    settings.useEmaFilter ? c < emaSeries[i] : true
-  );
-  const isSmaUptrend = closeSeries.map((c, i) =>
-    settings.useSmaFilter ? c > smaSeries[i] : true
-  );
-  const isSmaDowntrend = closeSeries.map((c, i) =>
-    settings.useSmaFilter ? c < smaSeries[i] : true
-  );
-
-  const volatilityFilter = ml.filterVolatility(
-    highSeries,
-    lowSeries,
-    closeSeries,
-    1,
-    10,
-    settings.filterSettings.useVolatilityFilter
-  );
-  const regimeFilter = ml.regimeFilter(
-    ohlc4Series,
-    settings.filterSettings.regimeThreshold,
-    settings.filterSettings.useRegimeFilter
-  );
-  const adxFilter = ml.filterAdx(
-    highSeries,
-    lowSeries,
-    closeSeries,
-    14,
-    settings.filterSettings.adxThreshold,
-    settings.filterSettings.useAdxFilter
-  );
-
-  const yhat1 = kernels.rationalQuadratic(
-    sourceSeries,
-    settings.h,
-    settings.r,
-    settings.x
-  );
-  const yhat2 = kernels.gaussian(
-    sourceSeries,
-    settings.h - settings.lag,
-    settings.x
-  );
-  const bullishCross = crossover(yhat2, yhat1);
-  const bearishCross = crossunder(yhat2, yhat1);
-
-  const yTrainArray = [];
-  const persistentPredictions = [];
-  const persistentDistances = [];
-
-  const prediction = makeArray(n, 0);
-  const signal = makeArray(n, 0);
-  const barsHeld = makeArray(n, 0);
-  const isHeldFourBars = makeArray(n, false);
-  const isHeldLessThanFourBars = makeArray(n, false);
-  const isDifferentSignalType = makeArray(n, false);
-  const isEarlySignalFlip = makeArray(n, false);
-  const isBuySignal = makeArray(n, false);
-  const isSellSignal = makeArray(n, false);
-  const isNewBuySignal = makeArray(n, false);
-  const isNewSellSignal = makeArray(n, false);
-  const wasBearishRate = makeArray(n, false);
-  const wasBullishRate = makeArray(n, false);
-  const isBearishRate = makeArray(n, false);
-  const isBullishRate = makeArray(n, false);
-  const isBearishChange = makeArray(n, false);
-  const isBullishChange = makeArray(n, false);
-  const alertBullish = makeArray(n, false);
-  const alertBearish = makeArray(n, false);
-  const isBullish = makeArray(n, true);
-  const isBearish = makeArray(n, true);
-  const startLongTrade = makeArray(n, false);
-  const startShortTrade = makeArray(n, false);
-  const endLongTradeDynamic = makeArray(n, false);
-  const endShortTradeDynamic = makeArray(n, false);
-  const endLongTradeStrict = makeArray(n, false);
-  const endShortTradeStrict = makeArray(n, false);
-  const endLongTrade = makeArray(n, false);
-  const endShortTrade = makeArray(n, false);
-  const backTestStream = makeArray(n, 0);
-
-  const maxBarsBackIndex = Math.max(
-    0,
-    n - 1 >= settings.maxBarsBack ? n - 1 - settings.maxBarsBack : 0
-  );
-
-  for (let t = 0; t < n; t += 1) {
-    const yTrain =
-      seriesShift(sourceSeries, t, 4) < sourceSeries[t]
-        ? -1
-        : seriesShift(sourceSeries, t, 4) > sourceSeries[t]
-        ? 1
-        : 0;
-
-    yTrainArray.push(yTrain);
-
-    let lastDistance = -1.0;
-    const size = Math.min(settings.maxBarsBack - 1, yTrainArray.length - 1);
-    const sizeLoop = Math.min(settings.maxBarsBack - 1, size);
-
-    if (t >= maxBarsBackIndex) {
-      const featureSeries = featureArrays
-        .slice(0, settings.featureCount)
-        .map((history) => ({ current: history[t], history }));
-
-      for (let i = 0; i <= sizeLoop; i += 1) {
-        const d = getLorentzianDistance(i, featureSeries, settings);
-        if (d >= lastDistance && i % 4) {
-          lastDistance = d;
-          persistentDistances.push(d);
-          persistentPredictions.push(Math.round(yTrainArray[i]));
-
-          if (persistentPredictions.length > settings.neighborsCount) {
-            const idx = Math.round((settings.neighborsCount * 3) / 4);
-            lastDistance =
-              persistentDistances[Math.min(idx, persistentDistances.length - 1)];
-            persistentDistances.shift();
-            persistentPredictions.shift();
-          }
+    if (currentPosition === 1 && endLongTrade[barIndex]) {
+        const exitPrice = useWorstCase ? close[barIndex] : ohlc4[barIndex];
+        if (isValidNumber(entryPrice) && isValidNumber(exitPrice) && exitPrice > entryPrice) {
+            totalWins += 1;
+        } else {
+            totalLosses += 1;
         }
-      }
-
-      prediction[t] = sumFinite(persistentPredictions);
+        currentPosition = 0;
+        entryPrice = null;
+        continue;
     }
 
-    const filterAll = volatilityFilter[t] && regimeFilter[t] && adxFilter[t];
-
-    signal[t] =
-      prediction[t] > 0 && filterAll
-        ? 1
-        : prediction[t] < 0 && filterAll
-        ? -1
-        : t > 0
-        ? signal[t - 1]
-        : 0;
-
-    isDifferentSignalType[t] = change(signal, t) !== 0;
-    barsHeld[t] = isDifferentSignalType[t] ? 0 : t > 0 ? barsHeld[t - 1] + 1 : 0;
-    isHeldFourBars[t] = barsHeld[t] === 4;
-    isHeldLessThanFourBars[t] = barsHeld[t] > 0 && barsHeld[t] < 4;
-
-    isEarlySignalFlip[t] =
-      isDifferentSignalType[t] &&
-      (change(signal, t - 1) !== 0 ||
-        change(signal, t - 2) !== 0 ||
-        change(signal, t - 3) !== 0);
-
-    wasBearishRate[t] = seriesShift(yhat1, t, 2) > seriesShift(yhat1, t, 1);
-    wasBullishRate[t] = seriesShift(yhat1, t, 2) < seriesShift(yhat1, t, 1);
-    isBearishRate[t] = seriesShift(yhat1, t, 1) > yhat1[t];
-    isBullishRate[t] = seriesShift(yhat1, t, 1) < yhat1[t];
-    isBearishChange[t] = isBearishRate[t] && wasBullishRate[t];
-    isBullishChange[t] = isBullishRate[t] && wasBearishRate[t];
-
-    alertBullish[t] = settings.useKernelSmoothing ? bullishCross[t] : isBullishChange[t];
-    alertBearish[t] = settings.useKernelSmoothing ? bearishCross[t] : isBearishChange[t];
-
-    isBullish[t] = settings.useKernelFilter
-      ? settings.useKernelSmoothing
-        ? yhat2[t] >= yhat1[t]
-        : isBullishRate[t]
-      : true;
-
-    isBearish[t] = settings.useKernelFilter
-      ? settings.useKernelSmoothing
-        ? yhat2[t] <= yhat1[t]
-        : isBearishRate[t]
-      : true;
-
-    isBuySignal[t] = signal[t] === 1 && isEmaUptrend[t] && isSmaUptrend[t];
-    isSellSignal[t] = signal[t] === -1 && isEmaDowntrend[t] && isSmaDowntrend[t];
-    isNewBuySignal[t] = isBuySignal[t] && isDifferentSignalType[t];
-    isNewSellSignal[t] = isSellSignal[t] && isDifferentSignalType[t];
-
-    startLongTrade[t] =
-      isNewBuySignal[t] && isBullish[t] && isEmaUptrend[t] && isSmaUptrend[t];
-    startShortTrade[t] =
-      isNewSellSignal[t] && isBearish[t] && isEmaDowntrend[t] && isSmaDowntrend[t];
-  }
-
-  const barsSinceShortEntry = barsSince(startShortTrade);
-  const barsSinceBullishAlert = barsSince(alertBullish);
-  const barsSinceLongEntry = barsSince(startLongTrade);
-  const barsSinceBearishAlert = barsSince(alertBearish);
-
-  const isDynamicExitValid =
-    !settings.useEmaFilter &&
-    !settings.useSmaFilter &&
-    !settings.useKernelSmoothing;
-
-  for (let t = 0; t < n; t += 1) {
-    const isLastSignalBuy =
-      seriesShift(signal, t, 4, 0) === 1 &&
-      boolAt(isEmaUptrend, t - 4) &&
-      boolAt(isSmaUptrend, t - 4);
-
-    const isLastSignalSell =
-      seriesShift(signal, t, 4, 0) === -1 &&
-      boolAt(isEmaDowntrend, t - 4) &&
-      boolAt(isSmaDowntrend, t - 4);
-
-    const prevIsValidLongExit =
-      t > 0 ? barsSinceBearishAlert[t - 1] > barsSinceLongEntry[t - 1] : false;
-
-    const prevIsValidShortExit =
-      t > 0 ? barsSinceBullishAlert[t - 1] > barsSinceShortEntry[t - 1] : false;
-
-    endLongTradeDynamic[t] = isBearishChange[t] && prevIsValidLongExit;
-    endShortTradeDynamic[t] = isBullishChange[t] && prevIsValidShortExit;
-
-    endLongTradeStrict[t] =
-      ((isHeldFourBars[t] && isLastSignalBuy) ||
-        (isHeldLessThanFourBars[t] && isNewSellSignal[t] && isLastSignalBuy)) &&
-      boolAt(startLongTrade, t - 4);
-
-    endShortTradeStrict[t] =
-      ((isHeldFourBars[t] && isLastSignalSell) ||
-        (isHeldLessThanFourBars[t] && isNewBuySignal[t] && isLastSignalSell)) &&
-      boolAt(startShortTrade, t - 4);
-
-    endLongTrade[t] =
-      settings.useDynamicExits && isDynamicExitValid
-        ? endLongTradeDynamic[t]
-        : endLongTradeStrict[t];
-
-    endShortTrade[t] =
-      settings.useDynamicExits && isDynamicExitValid
-        ? endShortTradeDynamic[t]
-        : endShortTradeStrict[t];
-
-    backTestStream[t] = startLongTrade[t]
-      ? 1
-      : endLongTrade[t]
-      ? 2
-      : startShortTrade[t]
-      ? -1
-      : endShortTrade[t]
-      ? -2
-      : 0;
-  }
-
-  const stats = settings.showTradeStats
-    ? ml.backtest({
-        open: openSeries,
-        high: highSeries,
-        low: lowSeries,
-        startLongTrade,
-        endLongTrade,
-        startShortTrade,
-        endShortTrade,
-        isEarlySignalFlip,
-        useWorstCase: settings.useWorstCase,
-      })
-    : null;
-
-  return {
-    open: openSeries,
-    high: highSeries,
-    low: lowSeries,
-    close: closeSeries,
-    volume: volumeSeries,
-    hlc3: hlc3Series,
-    ohlc4: ohlc4Series,
-    features: featureArrays,
-    prediction,
-    signal,
-    kernelEstimate: yhat1,
-    kernelAux: yhat2,
-    alertBullish,
-    alertBearish,
-    startLongTrade,
-    startShortTrade,
-    endLongTrade,
-    endShortTrade,
-    backTestStream,
-    stats,
-  };
+    if (currentPosition === -1 && endShortTrade[barIndex]) {
+        const exitPrice = useWorstCase ? close[barIndex] : ohlc4[barIndex];
+        if (isValidNumber(entryPrice) && isValidNumber(exitPrice) && exitPrice < entryPrice) {
+            totalWins += 1;
+        } else {
+            totalLosses += 1;
+        }
+        currentPosition = 0;
+        entryPrice = null;
+    }
 }
+
+const winRate = totalTrades > 0 ? totalWins / totalTrades : 0;
+const winLossRatio = totalLosses > 0 ? totalWins / totalLosses : totalWins;
+const tradeStatsRows = [];
+if (showTradeStats) {
+    tradeStatsRows.push({
+        cells: [{
+            text: 'Trade Stats (calibration only)',
+            color: 'var(--text-color)',
+            colspan: 2,
+            fontWeight: 'bold'
+        }]
+    });
+    tradeStatsRows.push({ cells: [textCell('Win Rate'), textCell(totalTrades > 0 ? `${(winRate * 100).toFixed(1)}%` : 'n/a')] });
+    tradeStatsRows.push({ cells: [textCell('Trades'), textCell(`${totalTrades} (${totalWins}|${totalLosses})`)] });
+    tradeStatsRows.push({ cells: [textCell('WL Ratio'), textCell(totalLosses > 0 ? winLossRatio.toFixed(2) : (totalWins > 0 ? String(totalWins) : 'n/a'))] });
+    tradeStatsRows.push({ cells: [textCell('Early Signal Flips'), textCell(String(totalEarlySignalFlips))] });
+    tradeStatsRows.push({ cells: [textCell('Kernel Mode'), textCell(useKernelFilter ? (useKernelSmoothing ? 'Smoothed' : 'Rate') : 'Off')] });
+}
+
+paint(kernelEstimate, {
+    name: 'Kernel Estimate',
+    color: kernelColorSeries,
+    thickness: 2
+});
+
+paint(buyLabels, {
+    name: 'Buy Labels',
+    style: 'labels_below',
+    backgroundColor: bullishMarkerColor,
+    color: 'white',
+    verticalOffset: 12
+});
+
+paint(sellLabels, {
+    name: 'Sell Labels',
+    style: 'labels_above',
+    backgroundColor: bearishMarkerColor,
+    color: 'white',
+    verticalOffset: 12
+});
+
+paint(exitLongLabels, {
+    name: 'Exit Long Labels',
+    style: 'labels_above',
+    backgroundColor: exitLongColor,
+    color: 'black',
+    verticalOffset: 8
+});
+
+paint(exitShortLabels, {
+    name: 'Exit Short Labels',
+    style: 'labels_below',
+    backgroundColor: exitShortColor,
+    color: 'white',
+    verticalOffset: 8
+});
+
+paint(predictionLabelsAbove, {
+    name: 'Prediction Labels Above',
+    style: 'labels_above',
+    backgroundColor: transparentColor,
+    color: predictionTextColors,
+    verticalOffset: useAtrOffset ? 18 : Math.round(6 + (barPredictionsOffset * 2)),
+    editorHidden: false,
+    hideInLegend: true
+});
+
+paint(predictionLabelsBelow, {
+    name: 'Prediction Labels Below',
+    style: 'labels_below',
+    backgroundColor: transparentColor,
+    color: predictionTextColors,
+    verticalOffset: useAtrOffset ? 18 : Math.round(6 + (barPredictionsOffset * 2)),
+    editorHidden: false,
+    hideInLegend: true
+});
+
+paint(backtestStream, {
+    name: 'Backtest Stream',
+    hidden: true,
+    hideInLegend: true,
+    hideInScriptEditor: false,
+    ignoreWhenScaling: true
+});
+
+color_candles(candleColors);
+
+paint_overlay('Trade Stats Overlay', { position: 'top_right', order: 'above_all' }, {
+    background: 'var(--background-color)',
+    rows: tradeStatsRows
+});
+
+register_signal(startLongTrade, 'Open Long');
+register_signal(endLongTrade, 'Close Long');
+register_signal(startShortTrade, 'Open Short');
+register_signal(endShortTrade, 'Close Short');
+register_signal(startLongTrade.map(function(value, index) {
+    return value || startShortTrade[index];
+}), 'Open Position');
+register_signal(endLongTrade.map(function(value, index) {
+    return value || endShortTrade[index];
+}), 'Close Position');
+register_signal(alertBullish, 'Kernel Bullish Change');
+register_signal(alertBearish, 'Kernel Bearish Change');
+register_signal(isEarlySignalFlip, 'Early Signal Flip');
+register_signal(predictionSeries.map(function(value) {
+    return value > 0;
+}), 'Prediction Positive');
+register_signal(predictionSeries.map(function(value) {
+    return value < 0;
+}), 'Prediction Negative');
